@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "synapsync.news-feed",
+  "name": "News Feed",
+  "version": "1.0.0",
+  "author": "Roimer Peraza",
+  "description": "Read headlines from an RSS news feed, Yahoo Finance by default, from the bar.",
+  "license": "MIT",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "News Feed",
+    "description": "Fetch and read headlines from any RSS feed without leaving the bar",
+    "category": "News",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "feedUrl": "https://finance.yahoo.com/news/rssindex",
+      "feedName": "Yahoo Finance",
+      "itemLimit": "25",
+      "refreshMinutes": "15"
+    },
+    "schema": [
+      {
+        "key": "feedUrl",
+        "type": "string",
+        "label": "Feed URL (RSS)",
+        "defaultValue": "https://finance.yahoo.com/news/rssindex"
+      },
+      {
+        "key": "feedName",
+        "type": "string",
+        "label": "Feed name (shown in the panel header)",
+        "defaultValue": "Yahoo Finance"
+      },
+      {
+        "key": "itemLimit",
+        "type": "string",
+        "label": "Headlines to fetch (1-50)",
+        "defaultValue": "25"
+      },
+      {
+        "key": "refreshMinutes",
+        "type": "string",
+        "label": "Auto-refresh interval in minutes (0 disables)",
+        "defaultValue": "15"
+      }
+    ]
+  }
+}

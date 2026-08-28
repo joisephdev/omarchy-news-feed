@@ -9,8 +9,12 @@ the Omarchy bar.
 - Ships with a working default: Yahoo Finance top stories
   (`finance.yahoo.com/news/rssindex`). Yahoo retired its general-purpose news
   RSS feed, so this is the Yahoo feed that is actually online today.
+- Wire-service styling: the bar entry is a live ticker of the latest
+  headline, and the panel reads top to bottom — one featured story, then a
+  numbered feed of the rest.
+- Select a headline to read it in a floating reader window, extracted to
+  plain text, instead of jumping straight to a browser tab.
 - Filter the fetched headlines by title or source as you type.
-- Open a selected headline in your default browser.
 - Auto-refreshes on a configurable interval (or manually, any time).
 - Navigate entirely by keyboard or use the mouse.
 - Match the active Omarchy theme, typography, and panel styling.
@@ -64,18 +68,40 @@ Open the panel to see the latest fetch. Typing filters the already-fetched
 list by title or source — it does not requery the feed.
 
 - **Up / Down** — move through headlines
-- **Enter** — open the selected headline in your browser
+- **Enter** — open the selected headline in the reader
 - **Escape** — clear the filter; press again to close the panel
 - **Tab** — move to the next bar panel
-- **Left click** — open or close the News panel
-- **Right click** — refresh without opening the panel
+- **Left click** — open or close the News panel, or open a headline in the reader
+- **Right click** — on the bar icon, refresh without opening the panel; on a
+  headline, skip the reader and open it directly in your browser
+
+## Read an article
+
+Selecting a headline opens it in a floating reader window centered on
+screen, not a browser tab: `fetch-article.py` fetches the page and extracts
+its readable text with a heuristic parser (paragraph tags, minus nav/script/
+ad chrome), using only the Python standard library.
+
+This works well on server-rendered pages and can come up thin on
+JavaScript-rendered ones, since only the initial HTML response is read — no
+JS execution. When extraction comes up too short to read, or you just want
+the real page (images, video, interactive embeds, a paywall login), select
+**Open in browser** in the reader header, or right-click the headline in the
+list to skip the reader entirely.
+
+- **Enter** — open the current article in your browser (closes the reader)
+- **Escape**, **✕**, or **← wire** — close the reader
+- Selecting **Open in browser** also closes the reader
 
 ## Privacy and network access
 
 - `fetch-news.py` makes a single HTTP(S) GET request to the configured feed
   URL and reads nothing else.
+- `fetch-article.py` makes a single HTTP(S) GET request to the headline's own
+  URL when you open the reader, and reads nothing else — no images, scripts,
+  or trackers on the page are fetched, only the HTML response.
 - No filter text, click history, or settings are sent anywhere; only the feed
-  URL you configured is contacted.
+  URL and, when you open an article, that article's URL are contacted.
 - No index, cache, telemetry, or background daemon is created — headlines
   live in memory only for as long as the panel process runs.
 
@@ -119,6 +145,14 @@ return valid RSS — check it in a browser, or check network connectivity.
 Some feeds omit `pubDate` per item; the widget then just shows the source
 name. This does not affect fetching or opening headlines.
 
+### The reader says "Not enough readable text on this page"
+
+The site renders its article body with JavaScript, so the initial HTML
+response `fetch-article.py` reads has little or no article text in it. This
+is expected for some sites — select **Open in browser** in the reader (or
+right-click the headline instead of opening the reader) to read the real
+page.
+
 ### Changes do not appear after development edits
 
 User plugins normally hot-reload. Force discovery when needed:
@@ -142,7 +176,7 @@ Validate the plugin directory before publishing:
 
 ```sh
 omarchy plugin validate .
-python3 -m py_compile fetch-news.py
+python3 -m py_compile fetch-news.py fetch-article.py
 ```
 
 The plugin has no build step and no downloaded runtime dependencies beyond a

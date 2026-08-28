@@ -30,6 +30,8 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string fetchCommand: (Quickshell.env("HOME") || "")
     + "/.config/omarchy/plugins/synapsync.news-feed/fetch-news.py"
+  readonly property string articleCommand: (Quickshell.env("HOME") || "")
+    + "/.config/omarchy/plugins/synapsync.news-feed/fetch-article.py"
 
   readonly property string feedUrl: String(root.setting("feedUrl", "https://finance.yahoo.com/news/rssindex")).trim()
   readonly property string feedName: {
@@ -51,6 +53,16 @@ Panel {
   property bool editingSettings: false
   property string lastError: ""
   property double lastFetchedAt: 0
+
+  // ---- reader modal state -----------------------------------------------
+  property bool readerOpen: false
+  property bool readerLoading: false
+  property string readerUrl: ""
+  property string readerTitle: ""
+  property string readerByline: ""
+  property string readerText: ""
+  property string readerErrorText: ""
+  property bool readerTruncated: false
 
   readonly property int maxListRows: 6
   readonly property real rowHeight: Style.space(44)
@@ -74,13 +86,6 @@ Panel {
   readonly property int listOffset: root.leadItem ? 1 : 0
 
   readonly property bool hasItems: filteredItems.length > 0
-
-  readonly property string tickerText: {
-    if (root.items.length === 0) return "News"
-    var headline = String(root.items[0].title || "").trim()
-    if (headline === "") return "News"
-    return headline.length > 34 ? headline.slice(0, 33) + "…" : headline
-  }
 
   readonly property string footerCountText: {
     var n = filteredItems.length
@@ -127,13 +132,10 @@ Panel {
     fetchProcess.running = true
   }
 
-  function persistSettings(feedUrl, feedName, itemLimit, refreshMinutes) {
+  function persistSettings(overrides) {
     var entry = { id: root.moduleName }
     for (var key in root.settings) if (key !== "id") entry[key] = root.settings[key]
-    entry.feedUrl = String(feedUrl || "")
-    entry.feedName = String(feedName || "")
-    entry.itemLimit = String(itemLimit || "25")
-    entry.refreshMinutes = String(refreshMinutes || "15")
+    for (var k in overrides) entry[k] = overrides[k]
 
     root.settings = entry
     if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
@@ -182,12 +184,67 @@ Panel {
 
   function openHeadline() {
     if (root.selectedIndex < 0 || root.selectedIndex >= root.filteredItems.length) return
-    var headline = root.filteredItems[root.selectedIndex]
+    root.openReader(root.filteredItems[root.selectedIndex])
+  }
+
+  function openInBrowserDirect(headline) {
     if (!headline || !headline.link) return
     root.close()
     Qt.callLater(function() {
       Quickshell.execDetached(["xdg-open", headline.link])
     })
+  }
+
+  // ---- reader modal --------------------------------------------------------
+
+  function openReader(headline) {
+    if (!headline || !headline.link) return
+    root.readerUrl = headline.link
+    root.readerTitle = headline.title || ""
+    root.readerByline = [headline.source, root.agoText(headline.published) ? root.agoText(headline.published) + " ago" : ""]
+      .filter(function(s) { return s }).join("  ·  ")
+    root.readerText = ""
+    root.readerErrorText = ""
+    root.readerTruncated = false
+    root.readerLoading = true
+    root.readerOpen = true
+    root.close()
+
+    articleProcess.command = ["python3", root.articleCommand, root.readerUrl]
+    articleProcess.running = true
+  }
+
+  function closeReader() {
+    root.readerOpen = false
+    reopenListTimer.restart()
+  }
+
+  function openInBrowser() {
+    if (root.readerUrl === "") return
+    Quickshell.execDetached(["xdg-open", root.readerUrl])
+    root.closeReader()
+  }
+
+  function parseArticle(raw) {
+    root.readerLoading = false
+    var text = String(raw || "").trim()
+    if (text === "") {
+      root.readerErrorText = "Could not read this article"
+      return
+    }
+    try {
+      var parsed = JSON.parse(text)
+      if (parsed && parsed.error) {
+        root.readerErrorText = String(parsed.error)
+        return
+      }
+      if (parsed && parsed.title && String(parsed.title).trim() !== "") root.readerTitle = parsed.title
+      root.readerText = (parsed && parsed.text) || ""
+      root.readerTruncated = !!(parsed && parsed.truncated)
+    } catch (e) {
+      console.warn(root.moduleName + ": invalid article response", e)
+      root.readerErrorText = "Could not read this article"
+    }
   }
 
   function startEditingSettings() {
@@ -201,8 +258,14 @@ Panel {
 
   function saveSettings() {
     root.editingSettings = false
-    root.persistSettings(feedUrlField.text.trim(), feedNameField.text.trim(),
-      limitField.text.trim(), intervalField.text.trim())
+    var limit = limitField.text.trim()
+    var interval = intervalField.text.trim()
+    root.persistSettings({
+      feedUrl: feedUrlField.text.trim(),
+      feedName: feedNameField.text.trim(),
+      itemLimit: limit !== "" ? limit : "25",
+      refreshMinutes: interval !== "" ? interval : "15"
+    })
     Qt.callLater(function() { filterField.forceActiveFocus() })
   }
 
@@ -243,13 +306,52 @@ Panel {
     onTriggered: root.runFetch()
   }
 
+  Process {
+    id: articleProcess
+    command: []
+    running: false
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.parseArticle(text)
+    }
+
+    onExited: function(exitCode) {
+      root.readerLoading = false
+      if (exitCode !== 0) {
+        console.warn(root.moduleName + ": article command exited", exitCode)
+        root.readerErrorText = "Could not read this article (error " + exitCode + ")"
+      }
+    }
+  }
+
+  // Distinct popout coordinator identity from the headline panel (`owner:
+  // root` there) so the reader can be open while the headline panel is
+  // closed without the two fighting over the bar's single-popout slot.
+  QtObject {
+    id: readerOwner
+    function close() { root.closeReader() }
+  }
+
+  // Reopening the headline panel right on the same tick the reader panel
+  // closes leaves it logically open (own `open`/`visible` bindings both
+  // true) but not actually painted — the layer-shell surface needs a beat
+  // after tearing down before it will map again. A short real delay (not
+  // Qt.callLater, which fires within the same frame) works around it.
+  Timer {
+    id: reopenListTimer
+    interval: 220
+    repeat: false
+    onTriggered: root.open()
+  }
+
   // ---- bar entry: a live ticker, not a static label -------------------------
 
   WidgetButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: (root.loading && root.items.length === 0 ? "News…" : "» " + root.tickerText)
+    text: "󰎕 Wire"
     fontSize: Style.font.bodySmall
     horizontalMargin: 6.5
     tooltipText: root.feedName + " — click to open, right-click to refresh"
@@ -278,8 +380,11 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: filterField.activeFocus || feedUrlField.activeFocus
-        || feedNameField.activeFocus || limitField.activeFocus || intervalField.activeFocus
+      // Editing mode hands every key straight to its focused control (text
+      // fields and dropdown triggers each handle their own Left/Right/Up/
+      // Down/Enter/Escape) instead of the list's global navigation, which
+      // would otherwise steal Enter before a dropdown's own handler saw it.
+      blocked: filterField.activeFocus || root.editingSettings
 
       onMoveRequested: function(dx, dy) { if (dy !== 0) root.move(dy) }
       onActivateRequested: root.openHeadline()
@@ -509,8 +614,13 @@ Panel {
             MouseArea {
               anchors.fill: parent
               hoverEnabled: true
+              acceptedButtons: Qt.LeftButton | Qt.RightButton
               onEntered: root.selectedIndex = 0
-              onClicked: { root.selectedIndex = 0; root.openHeadline() }
+              onClicked: function(mouse) {
+                root.selectedIndex = 0
+                if (mouse.button === Qt.RightButton) root.openInBrowserDirect(root.leadItem)
+                else root.openHeadline()
+              }
             }
 
             Column {
@@ -645,11 +755,13 @@ Panel {
             MouseArea {
               anchors.fill: parent
               hoverEnabled: true
+              acceptedButtons: Qt.LeftButton | Qt.RightButton
               onEntered: root.selectedIndex = row.absoluteIndex
               onPositionChanged: root.selectedIndex = row.absoluteIndex
-              onClicked: {
+              onClicked: function(mouse) {
                 root.selectedIndex = row.absoluteIndex
-                root.openHeadline()
+                if (mouse.button === Qt.RightButton) root.openInBrowserDirect(row.headline)
+                else root.openHeadline()
               }
             }
 
@@ -755,6 +867,189 @@ Panel {
             font.pixelSize: Style.font.caption
             font.letterSpacing: 0.6
           }
+        }
+      }
+    }
+  }
+
+  // ---- reader modal: a floating window over everything, not the bar's dropdown ---
+
+  KeyboardPanel {
+    id: readerPanel
+    anchorItem: button
+    owner: readerOwner
+    bar: root.bar
+    open: root.readerOpen
+    centerOnBar: true
+    focusTarget: readerKeyCatcher
+    contentWidth: readerPanel.fittedContentWidth(Style.space(680))
+    contentHeight: readerPanel.fittedContentHeight(readerColumn.implicitHeight, Style.space(640))
+
+    PanelKeyCatcher {
+      id: readerKeyCatcher
+      anchors.fill: parent
+
+      onCloseRequested: root.closeReader()
+      onActivateRequested: root.openInBrowser()
+      onReturnRequested: root.openInBrowser()
+
+      Column {
+        id: readerColumn
+        width: parent.width
+        spacing: Style.space(10)
+
+        Item {
+          width: parent.width
+          height: Style.space(22)
+
+          Text {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: "← wire"
+            font.capitalization: Font.AllUppercase
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.letterSpacing: 1
+            font.bold: true
+
+            MouseArea {
+              anchors.fill: parent
+              anchors.margins: -Style.space(6)
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.closeReader()
+            }
+          }
+
+          Row {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(6)
+
+            Button {
+              text: "Open in browser ↗"
+              foreground: root.dim
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              horizontalPadding: Style.space(8)
+              bordered: true
+              focusable: true
+              onClicked: root.openInBrowser()
+            }
+
+            Button {
+              text: "✕"
+              foreground: root.dim
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              horizontalPadding: Style.space(8)
+              bordered: true
+              focusable: true
+              onClicked: root.closeReader()
+            }
+          }
+        }
+
+        Text {
+          width: parent.width
+          text: root.readerTitle
+          wrapMode: Text.Wrap
+          maximumLineCount: 3
+          elide: Text.ElideRight
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.heading
+          font.bold: true
+          lineHeight: 1.2
+        }
+
+        Text {
+          width: parent.width
+          visible: root.readerByline !== ""
+          text: root.readerByline
+          font.capitalization: Font.AllUppercase
+          color: root.dimmer
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.letterSpacing: 0.6
+        }
+
+        Rectangle { width: parent.width; height: 1; color: root.hairline }
+
+        Flickable {
+          width: parent.width
+          height: Style.space(400)
+          clip: true
+          visible: root.readerErrorText === ""
+          contentWidth: width
+          contentHeight: bodyText.implicitHeight
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          Text {
+            id: bodyText
+            width: parent.width
+            text: root.readerLoading ? "Receiving…" : root.readerText
+            wrapMode: Text.Wrap
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            lineHeight: 1.35
+          }
+        }
+
+        Column {
+          width: parent.width
+          visible: root.readerErrorText !== ""
+          spacing: Style.space(10)
+          topPadding: Style.space(40)
+          bottomPadding: Style.space(20)
+
+          Text {
+            width: parent.width
+            text: root.readerErrorText
+            wrapMode: Text.Wrap
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            horizontalAlignment: Text.AlignHCenter
+          }
+
+          Button {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "Open in browser ↗"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            bordered: true
+            focusable: true
+            onClicked: root.openInBrowser()
+          }
+        }
+
+        Text {
+          width: parent.width
+          visible: root.readerTruncated && root.readerErrorText === ""
+          text: "truncated — open in browser for the full article"
+          font.capitalization: Font.AllUppercase
+          color: root.dimmer
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.letterSpacing: 0.6
+        }
+
+        Rectangle { width: parent.width; height: 1; color: root.hairline }
+
+        Text {
+          width: parent.width
+          text: "esc back  ·  ⏎ open in browser"
+          font.capitalization: Font.AllUppercase
+          color: root.dimmer
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.letterSpacing: 0.6
+          horizontalAlignment: Text.AlignRight
         }
       }
     }

@@ -19,10 +19,12 @@ Network, parse, and decode failures are caught and reported the same way —
 this script never raises, so the caller always gets valid JSON.
 """
 import html
+import http.client
 import ipaddress
 import json
 import re
 import socket
+import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -34,6 +36,8 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux) omarchy-news-feed/1.0"
 MAX_CHARS = 8000
 MIN_READABLE_CHARS = 200
 MAX_BYTES = 5 * 1024 * 1024  # 5 MiB cap on article responses
+MAX_TITLE_LEN = 300
+MAX_URL_LEN = 2048
 
 SKIP_TAGS = {
     "script", "style", "noscript", "svg", "header", "footer", "nav",
@@ -46,7 +50,7 @@ BREAK_TAGS = {
 
 
 def _is_safe_host(hostname):
-    """Return True if hostname resolves to a non-loopback, non-private address."""
+    """Return True if hostname resolves only to global (non-private) addresses."""
     try:
         infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except (socket.gaierror, OSError):
@@ -55,16 +59,94 @@ def _is_safe_host(hostname):
         return False
     for family, _, _, _, sockaddr in infos:
         addr = ipaddress.ip_address(sockaddr[0])
-        if addr.is_loopback or addr.is_private or addr.is_link_local:
+        if not addr.is_global:
             return False
     return True
 
 
+class VerifiedHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection that resolves the hostname itself and connects only to global addresses."""
+
+    def connect(self):
+        port = self.port or 80
+        try:
+            infos = socket.getaddrinfo(self.host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except (socket.gaierror, OSError) as e:
+            raise OSError(f"Name resolution failed for {self.host}") from e
+        if not infos:
+            raise OSError(f"No address found for {self.host}")
+        valid = []
+        for family, _, _, _, sockaddr in infos:
+            addr = ipaddress.ip_address(sockaddr[0])
+            if addr.is_global:
+                valid.append((family, sockaddr))
+        if not valid:
+            raise OSError(f"No global address for {self.host}")
+        last_err = None
+        for family, sockaddr in valid:
+            try:
+                self.sock = socket.create_connection(sockaddr, timeout=self.timeout)
+                break
+            except OSError as e:
+                last_err = e
+        else:
+            raise last_err or OSError(f"Could not connect to {self.host}")
+
+
+class VerifiedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that resolves the hostname itself and connects only to global addresses."""
+
+    def connect(self):
+        port = self.port or 443
+        try:
+            infos = socket.getaddrinfo(self.host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except (socket.gaierror, OSError) as e:
+            raise OSError(f"Name resolution failed for {self.host}") from e
+        if not infos:
+            raise OSError(f"No address found for {self.host}")
+        valid = []
+        for family, _, _, _, sockaddr in infos:
+            addr = ipaddress.ip_address(sockaddr[0])
+            if addr.is_global:
+                valid.append((family, sockaddr))
+        if not valid:
+            raise OSError(f"No global address for {self.host}")
+        last_err = None
+        for family, sockaddr in valid:
+            try:
+                sock = socket.create_connection(sockaddr, timeout=self.timeout)
+                if self._tunnel_host:
+                    self.sock = sock
+                    self._tunnel()
+                else:
+                    context = self._context or ssl.create_default_context()
+                    self.sock = context.wrap_socket(sock, server_hostname=self.host)
+                break
+            except OSError as e:
+                last_err = e
+        else:
+            raise last_err or OSError(f"Could not connect to {self.host}")
+
+
+class VerifiedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(VerifiedHTTPConnection, req)
+
+
+class VerifiedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(VerifiedHTTPSConnection, req)
+
+
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Redirect handler that blocks redirects to loopback/private/link-local hosts."""
+    """Redirect handler that blocks redirects to non-global hosts and non-HTTP(S) schemes."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         parsed = urllib.parse.urlparse(newurl)
+        if parsed.scheme not in ("http", "https"):
+            raise urllib.error.URLError(
+                f"Redirect to non-HTTP(S) scheme rejected: {parsed.scheme}"
+            )
         hostname = parsed.hostname
         if not hostname or not _is_safe_host(hostname):
             raise urllib.error.URLError(
@@ -133,7 +215,7 @@ def extract(page_html):
     parser.feed(page_html)
     parser.close()
 
-    title = html.unescape(parser.title.strip())
+    title = html.unescape(parser.title.strip())[:MAX_TITLE_LEN]
     title_lower = title.lower()
 
     # Drop skip-navigation links and paragraphs that just echo the title
@@ -178,9 +260,16 @@ def fetch(url):
             "Accept": "text/html,application/xhtml+xml",
         },
     )
-    opener = urllib.request.build_opener(_SafeRedirectHandler)
+    opener = urllib.request.build_opener(
+        VerifiedHTTPHandler,
+        VerifiedHTTPSHandler,
+        _SafeRedirectHandler,
+    )
     with opener.open(req, timeout=TIMEOUT) as resp:
-        raw = resp.read(MAX_BYTES)
+        chunk = resp.read(MAX_BYTES + 1)
+        if len(chunk) > MAX_BYTES:
+            raise urllib.error.URLError("Response exceeds maximum allowed size")
+        raw = chunk
         charset = resp.headers.get_content_charset() or "utf-8"
     try:
         return raw.decode(charset, errors="replace")
@@ -193,6 +282,8 @@ def main(argv):
     if not re.match(r"^https?://", url, re.I):
         print(json.dumps({"error": "Invalid article URL"}))
         return 0
+    if len(url) > MAX_URL_LEN:
+        url = url[:MAX_URL_LEN]
 
     parsed = urllib.parse.urlparse(url)
     if not parsed.hostname or not _is_safe_host(parsed.hostname):

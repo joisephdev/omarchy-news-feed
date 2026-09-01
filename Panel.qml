@@ -33,10 +33,14 @@ Panel {
   readonly property string articleCommand: (Quickshell.env("HOME") || "")
     + "/.config/omarchy/plugins/synapsync.news-feed/fetch-article.py"
 
-  readonly property string feedUrl: String(root.setting("feedUrl", "https://finance.yahoo.com/news/rssindex")).trim()
+  readonly property string feedUrl: {
+    var url = String(root.setting("feedUrl", "https://finance.yahoo.com/news/rssindex")).trim()
+    return url.length > 2048 ? url.substring(0, 2048) : url
+  }
   readonly property string feedName: {
     var name = String(root.setting("feedName", "Yahoo Finance")).trim()
-    return name !== "" ? name : "News Feed"
+    name = name !== "" ? name : "News Feed"
+    return name.length > 80 ? name.substring(0, 80) : name
   }
   readonly property int itemLimit: {
     var n = parseInt(root.setting("itemLimit", "25"), 10)
@@ -136,6 +140,7 @@ Panel {
     root.lastError = ""
     fetchProcess.command = ["python3", root.fetchCommand, root.feedUrl, String(root.itemLimit)]
     fetchProcess.running = true
+    fetchDeadline.restart()
   }
 
   function persistSettings(overrides) {
@@ -206,9 +211,9 @@ Panel {
   function openReader(headline) {
     if (!headline || !headline.link) return
     root.readerUrl = headline.link
-    root.readerTitle = headline.title || ""
-    root.readerByline = [headline.source, root.agoText(headline.published) ? root.agoText(headline.published) + " ago" : ""]
-      .filter(function(s) { return s }).join("  ·  ")
+    root.readerTitle = (headline.title || "").substring(0, 300)
+    var bylineParts = [headline.source, root.agoText(headline.published) ? root.agoText(headline.published) + " ago" : ""]
+    root.readerByline = bylineParts.filter(function(s) { return s }).join("  ·  ").substring(0, 200)
     root.readerText = ""
     root.readerErrorText = ""
     root.readerTruncated = false
@@ -218,6 +223,7 @@ Panel {
 
     articleProcess.command = ["python3", root.articleCommand, root.readerUrl]
     articleProcess.running = true
+    articleDeadline.restart()
   }
 
   function closeReader() {
@@ -244,8 +250,8 @@ Panel {
         root.readerErrorText = String(parsed.error)
         return
       }
-      if (parsed && parsed.title && String(parsed.title).trim() !== "") root.readerTitle = parsed.title
-      root.readerText = (parsed && parsed.text) || ""
+      if (parsed && parsed.title && String(parsed.title).trim() !== "") root.readerTitle = String(parsed.title).trim().substring(0, 300)
+      root.readerText = ((parsed && parsed.text) || "").substring(0, 8000)
       root.readerTruncated = !!(parsed && parsed.truncated)
     } catch (e) {
       console.warn(root.moduleName + ": invalid article response", e)
@@ -286,6 +292,20 @@ Panel {
 
   Component.onCompleted: root.runFetch()
 
+  Timer {
+    id: fetchDeadline
+    interval: 20000
+    repeat: false
+    onTriggered: {
+      if (fetchProcess.running) {
+        console.warn(root.moduleName + ": fetch deadline exceeded, killing process")
+        fetchProcess.kill()
+        root.loading = false
+        root.lastError = "Fetch timed out"
+      }
+    }
+  }
+
   Process {
     id: fetchProcess
     command: []
@@ -293,10 +313,14 @@ Panel {
 
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.parseItems(text)
+      onStreamFinished: {
+        fetchDeadline.stop()
+        root.parseItems(text)
+      }
     }
 
     onExited: function(exitCode) {
+      fetchDeadline.stop()
       root.loading = false
       if (exitCode !== 0) {
         console.warn(root.moduleName + ": fetch command exited", exitCode)
@@ -312,6 +336,20 @@ Panel {
     onTriggered: root.runFetch()
   }
 
+  Timer {
+    id: articleDeadline
+    interval: 20000
+    repeat: false
+    onTriggered: {
+      if (articleProcess.running) {
+        console.warn(root.moduleName + ": article deadline exceeded, killing process")
+        articleProcess.kill()
+        root.readerLoading = false
+        root.readerErrorText = "Article fetch timed out"
+      }
+    }
+  }
+
   Process {
     id: articleProcess
     command: []
@@ -319,10 +357,14 @@ Panel {
 
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.parseArticle(text)
+      onStreamFinished: {
+        articleDeadline.stop()
+        root.parseArticle(text)
+      }
     }
 
     onExited: function(exitCode) {
+      articleDeadline.stop()
       root.readerLoading = false
       if (exitCode !== 0) {
         console.warn(root.moduleName + ": article command exited", exitCode)
@@ -360,7 +402,10 @@ Panel {
     text: "󰎕 Wire"
     fontSize: Style.font.bodySmall
     horizontalMargin: 6.5
-    tooltipText: root.feedName + " — click to open, right-click to refresh"
+    tooltipText: {
+      var n = root.feedName
+      return n + " — click to open, right-click to refresh"
+    }
 
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) {

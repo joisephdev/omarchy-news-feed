@@ -10,10 +10,13 @@ timeout, or parse failure prints an empty array rather than raising, so the
 panel always gets valid JSON.
 """
 import html
+import ipaddress
 import json
 import re
+import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -22,6 +25,35 @@ from email.utils import parsedate_to_datetime
 TIMEOUT = 8
 USER_AGENT = "Mozilla/5.0 (X11; Linux) omarchy-news-feed/1.0"
 SNIPPET_MAX = 160
+MAX_BYTES = 5 * 1024 * 1024  # 5 MiB cap on feed responses
+
+
+def _is_safe_host(hostname):
+    """Return True if hostname resolves to a non-loopback, non-private address."""
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except (socket.gaierror, OSError):
+        return False
+    if not infos:
+        return False
+    for family, _, _, _, sockaddr in infos:
+        addr = ipaddress.ip_address(sockaddr[0])
+        if addr.is_loopback or addr.is_private or addr.is_link_local:
+            return False
+    return True
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that blocks redirects to loopback/private/link-local hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urllib.parse.urlparse(newurl)
+        hostname = parsed.hostname
+        if not hostname or not _is_safe_host(hostname):
+            raise urllib.error.URLError(
+                f"Redirect to unsafe host rejected: {hostname}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def strip_html(text):
@@ -64,8 +96,9 @@ def fetch(feed_url):
             "Accept": "application/rss+xml, application/xml, text/xml, */*",
         },
     )
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        return resp.read()
+    opener = urllib.request.build_opener(_SafeRedirectHandler)
+    with opener.open(req, timeout=TIMEOUT) as resp:
+        return resp.read(MAX_BYTES)
 
 
 def parse(raw, limit):
@@ -99,6 +132,11 @@ def parse(raw, limit):
 def main(argv):
     feed_url = argv[1].strip() if len(argv) > 1 else ""
     if not re.match(r"^https?://", feed_url, re.I):
+        print("[]")
+        return 0
+
+    parsed = urllib.parse.urlparse(feed_url)
+    if not parsed.hostname or not _is_safe_host(parsed.hostname):
         print("[]")
         return 0
 

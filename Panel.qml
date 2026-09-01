@@ -110,6 +110,12 @@ Panel {
     return days + "d"
   }
 
+  function isSafeUrl(url) {
+    if (!url) return false
+    var lower = url.toLowerCase()
+    return lower.indexOf("http://") === 0 || lower.indexOf("https://") === 0
+  }
+
   function rowNumber(listIndex) {
     var n = listIndex + root.listOffset + 1
     return n < 10 ? "0" + n : String(n)
@@ -188,7 +194,7 @@ Panel {
   }
 
   function openInBrowserDirect(headline) {
-    if (!headline || !headline.link) return
+    if (!headline || !headline.link || !isSafeUrl(headline.link)) return
     root.close()
     Qt.callLater(function() {
       Quickshell.execDetached(["xdg-open", headline.link])
@@ -220,7 +226,7 @@ Panel {
   }
 
   function openInBrowser() {
-    if (root.readerUrl === "") return
+    if (root.readerUrl === "" || !isSafeUrl(root.readerUrl)) return
     Quickshell.execDetached(["xdg-open", root.readerUrl])
     root.closeReader()
   }
@@ -415,6 +421,7 @@ Panel {
 
             Text {
               text: root.feedName
+              textFormat: Text.PlainText
               font.capitalization: Font.AllUppercase
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -637,6 +644,7 @@ Panel {
                 wrapMode: Text.Wrap
                 maximumLineCount: 2
                 elide: Text.ElideRight
+                textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.heading
@@ -651,6 +659,7 @@ Panel {
                 wrapMode: Text.Wrap
                 maximumLineCount: 2
                 elide: Text.ElideRight
+                textFormat: Text.PlainText
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -661,6 +670,7 @@ Panel {
                   ? [root.leadItem.source, root.agoText(root.leadItem.published) ? root.agoText(root.leadItem.published) + " ago" : ""]
                     .filter(function(s) { return s }).join("  ·  ")
                   : ""
+                textFormat: Text.PlainText
                 font.capitalization: Font.AllUppercase
                 color: root.dimmer
                 font.family: root.fontFamily
@@ -787,6 +797,7 @@ Panel {
                 text: row.headline.title || "…"
                 elide: Text.ElideRight
                 wrapMode: Text.NoWrap
+                textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -802,6 +813,7 @@ Panel {
                 Text {
                   width: parent.width
                   text: row.headline.source || ""
+                  textFormat: Text.PlainText
                   font.capitalization: Font.AllUppercase
                   elide: Text.ElideRight
                   horizontalAlignment: Text.AlignRight
@@ -956,6 +968,7 @@ Panel {
           wrapMode: Text.Wrap
           maximumLineCount: 3
           elide: Text.ElideRight
+          textFormat: Text.PlainText
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.heading
@@ -967,6 +980,7 @@ Panel {
           width: parent.width
           visible: root.readerByline !== ""
           text: root.readerByline
+          textFormat: Text.PlainText
           font.capitalization: Font.AllUppercase
           color: root.dimmer
           font.family: root.fontFamily
@@ -992,6 +1006,7 @@ Panel {
             width: parent.width
             text: root.readerLoading ? "Receiving…" : root.readerText
             wrapMode: Text.Wrap
+            textFormat: Text.PlainText
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.body

@@ -19,10 +19,13 @@ Network, parse, and decode failures are caught and reported the same way —
 this script never raises, so the caller always gets valid JSON.
 """
 import html
+import ipaddress
 import json
 import re
+import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 
@@ -30,6 +33,7 @@ TIMEOUT = 10
 USER_AGENT = "Mozilla/5.0 (X11; Linux) omarchy-news-feed/1.0"
 MAX_CHARS = 8000
 MIN_READABLE_CHARS = 200
+MAX_BYTES = 5 * 1024 * 1024  # 5 MiB cap on article responses
 
 SKIP_TAGS = {
     "script", "style", "noscript", "svg", "header", "footer", "nav",
@@ -39,6 +43,34 @@ BREAK_TAGS = {
     "p", "div", "li", "br", "h1", "h2", "h3", "h4", "h5", "h6",
     "blockquote", "article", "section", "tr",
 }
+
+
+def _is_safe_host(hostname):
+    """Return True if hostname resolves to a non-loopback, non-private address."""
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except (socket.gaierror, OSError):
+        return False
+    if not infos:
+        return False
+    for family, _, _, _, sockaddr in infos:
+        addr = ipaddress.ip_address(sockaddr[0])
+        if addr.is_loopback or addr.is_private or addr.is_link_local:
+            return False
+    return True
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that blocks redirects to loopback/private/link-local hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urllib.parse.urlparse(newurl)
+        hostname = parsed.hostname
+        if not hostname or not _is_safe_host(hostname):
+            raise urllib.error.URLError(
+                f"Redirect to unsafe host rejected: {hostname}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class ArticleParser(HTMLParser):
@@ -146,8 +178,9 @@ def fetch(url):
             "Accept": "text/html,application/xhtml+xml",
         },
     )
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        raw = resp.read()
+    opener = urllib.request.build_opener(_SafeRedirectHandler)
+    with opener.open(req, timeout=TIMEOUT) as resp:
+        raw = resp.read(MAX_BYTES)
         charset = resp.headers.get_content_charset() or "utf-8"
     try:
         return raw.decode(charset, errors="replace")
@@ -158,6 +191,11 @@ def fetch(url):
 def main(argv):
     url = argv[1].strip() if len(argv) > 1 else ""
     if not re.match(r"^https?://", url, re.I):
+        print(json.dumps({"error": "Invalid article URL"}))
+        return 0
+
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.hostname or not _is_safe_host(parsed.hostname):
         print(json.dumps({"error": "Invalid article URL"}))
         return 0
 

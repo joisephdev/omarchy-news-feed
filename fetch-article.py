@@ -85,7 +85,11 @@ class VerifiedHTTPConnection(http.client.HTTPConnection):
         last_err = None
         for family, sockaddr in valid:
             try:
-                self.sock = socket.create_connection(sockaddr, timeout=self.timeout)
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                if self.timeout is not None:
+                    sock.settimeout(self.timeout)
+                sock.connect(sockaddr)
+                self.sock = sock
                 break
             except OSError as e:
                 last_err = e
@@ -114,7 +118,10 @@ class VerifiedHTTPSConnection(http.client.HTTPSConnection):
         last_err = None
         for family, sockaddr in valid:
             try:
-                sock = socket.create_connection(sockaddr, timeout=self.timeout)
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                if self.timeout is not None:
+                    sock.settimeout(self.timeout)
+                sock.connect(sockaddr)
                 if self._tunnel_host:
                     self.sock = sock
                     self._tunnel()
@@ -125,6 +132,10 @@ class VerifiedHTTPSConnection(http.client.HTTPSConnection):
                     self.sock = context.wrap_socket(sock, server_hostname=self.host)
                 break
             except OSError as e:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
                 last_err = e
         else:
             raise last_err or OSError(f"Could not connect to {self.host}")

@@ -210,6 +210,12 @@ Panel {
 
   function openReader(headline) {
     if (!headline || !headline.link) return
+    if (articleProcess.running) {
+      console.warn(root.moduleName + ": previous article fetch still running, terminating")
+      articleProcess.signal(15)
+      articleKillGrace.restart()
+      return
+    }
     root.readerUrl = headline.link
     root.readerTitle = (headline.title || "").substring(0, 300)
     var bylineParts = [headline.source, root.agoText(headline.published) ? root.agoText(headline.published) + " ago" : ""]
@@ -292,16 +298,32 @@ Panel {
 
   Component.onCompleted: root.runFetch()
 
+  Component.onDestruction: {
+    if (fetchProcess.running) fetchProcess.signal(9)
+    if (articleProcess.running) articleProcess.signal(9)
+  }
+
   Timer {
     id: fetchDeadline
     interval: 20000
     repeat: false
     onTriggered: {
       if (fetchProcess.running) {
-        console.warn(root.moduleName + ": fetch deadline exceeded, killing process")
-        fetchProcess.kill()
-        root.loading = false
-        root.lastError = "Fetch timed out"
+        console.warn(root.moduleName + ": fetch deadline exceeded, terminating process")
+        fetchProcess.signal(15)
+        fetchKillGrace.restart()
+      }
+    }
+  }
+
+  Timer {
+    id: fetchKillGrace
+    interval: 2000
+    repeat: false
+    onTriggered: {
+      if (fetchProcess.running) {
+        console.warn(root.moduleName + ": fetch still alive, killing")
+        fetchProcess.signal(9)
       }
     }
   }
@@ -315,12 +337,14 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         fetchDeadline.stop()
+        fetchKillGrace.stop()
         root.parseItems(text)
       }
     }
 
     onExited: function(exitCode) {
       fetchDeadline.stop()
+      fetchKillGrace.stop()
       root.loading = false
       if (exitCode !== 0) {
         console.warn(root.moduleName + ": fetch command exited", exitCode)
@@ -342,10 +366,21 @@ Panel {
     repeat: false
     onTriggered: {
       if (articleProcess.running) {
-        console.warn(root.moduleName + ": article deadline exceeded, killing process")
-        articleProcess.kill()
-        root.readerLoading = false
-        root.readerErrorText = "Article fetch timed out"
+        console.warn(root.moduleName + ": article deadline exceeded, terminating process")
+        articleProcess.signal(15)
+        articleKillGrace.restart()
+      }
+    }
+  }
+
+  Timer {
+    id: articleKillGrace
+    interval: 2000
+    repeat: false
+    onTriggered: {
+      if (articleProcess.running) {
+        console.warn(root.moduleName + ": article still alive, killing")
+        articleProcess.signal(9)
       }
     }
   }
@@ -359,12 +394,14 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         articleDeadline.stop()
+        articleKillGrace.stop()
         root.parseArticle(text)
       }
     }
 
     onExited: function(exitCode) {
       articleDeadline.stop()
+      articleKillGrace.stop()
       root.readerLoading = false
       if (exitCode !== 0) {
         console.warn(root.moduleName + ": article command exited", exitCode)

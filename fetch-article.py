@@ -118,6 +118,8 @@ class VerifiedHTTPSConnection(http.client.HTTPSConnection):
                 if self._tunnel_host:
                     self.sock = sock
                     self._tunnel()
+                    context = self._context or ssl.create_default_context()
+                    self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
                 else:
                     context = self._context or ssl.create_default_context()
                     self.sock = context.wrap_socket(sock, server_hostname=self.host)
@@ -158,6 +160,11 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 class ArticleParser(HTMLParser):
     """Collects paragraph-ish text blocks and a title while skipping chrome."""
 
+    # Model-cardinality caps: a tiny response must not amplify into huge collections.
+    MAX_BLOCKS = 600
+    MAX_TOTAL_CHARS = 80_000
+    MAX_BUF_CHARS = 20_000
+
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.skip_depth = 0
@@ -165,6 +172,9 @@ class ArticleParser(HTMLParser):
         self._in_title = False
         self.paragraphs = []
         self._buf = []
+        self._total_chars = 0
+        self._aborted = False
+        self._buf_chars = 0
 
     def handle_starttag(self, tag, attrs):
         if tag in SKIP_TAGS:
@@ -193,17 +203,41 @@ class ArticleParser(HTMLParser):
             self._flush()
 
     def handle_data(self, data):
-        if self.skip_depth:
+        if self.skip_depth or self._aborted:
             return
         if self._in_title and not self.title:
             self.title += data
+            if len(self.title) > MAX_TITLE_LEN:
+                self.title = self.title[:MAX_TITLE_LEN]
+        # bound the pending buffer to avoid accumulation amplification
+        if self._buf_chars + len(data) > self.MAX_BUF_CHARS:
+            # drop excess rather than grow unbounded
+            remaining = self.MAX_BUF_CHARS - self._buf_chars
+            if remaining > 0:
+                self._buf.append(data[:remaining])
+                self._buf_chars += remaining
+            return
         self._buf.append(data)
+        self._buf_chars += len(data)
 
     def _flush(self):
         text = re.sub(r"\s+", " ", "".join(self._buf)).strip()
         self._buf = []
-        if text:
-            self.paragraphs.append(text)
+        self._buf_chars = 0
+        if not text or self._aborted:
+            return
+        if len(self.paragraphs) >= self.MAX_BLOCKS:
+            self._aborted = True
+            return
+        if self._total_chars + len(text) > self.MAX_TOTAL_CHARS:
+            remaining = self.MAX_TOTAL_CHARS - self._total_chars
+            if remaining <= 0:
+                self._aborted = True
+                return
+            text = text[:remaining]
+            self._aborted = True
+        self.paragraphs.append(text)
+        self._total_chars += len(text)
 
     def close(self):
         self._flush()
@@ -261,6 +295,7 @@ def fetch(url):
         },
     )
     opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
         VerifiedHTTPHandler,
         VerifiedHTTPSHandler,
         _SafeRedirectHandler,

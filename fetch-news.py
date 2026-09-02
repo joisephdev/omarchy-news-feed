@@ -103,6 +103,8 @@ class VerifiedHTTPSConnection(http.client.HTTPSConnection):
                 if self._tunnel_host:
                     self.sock = sock
                     self._tunnel()
+                    context = self._context or ssl.create_default_context()
+                    self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
                 else:
                     context = self._context or ssl.create_default_context()
                     self.sock = context.wrap_socket(sock, server_hostname=self.host)
@@ -181,6 +183,7 @@ def fetch(feed_url):
         },
     )
     opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
         VerifiedHTTPHandler,
         VerifiedHTTPSHandler,
         _SafeRedirectHandler,
@@ -193,30 +196,56 @@ def fetch(feed_url):
 
 
 def parse(raw, limit):
-    root = ET.fromstring(raw)
-    channel = root.find("channel")
-    items = channel.findall("item") if channel is not None else root.findall(".//item")
-
+    # Incremental parse with cardinality caps to bound CPU/memory amplification.
+    # A small 5 MiB response can otherwise materialize huge node collections.
+    import io
+    MAX_ITEMS_SCANNED = 200
+    MAX_TOTAL_CHARS = 120_000
+    total_chars = 0
     out = []
-    for item in items[:limit]:
-        title = text_of(item, "title")
-        if not title:
+    items_seen = 0
+    # ET.iterparse over <item> ends keeps only one item's subtree in memory.
+    ctx = ET.iterparse(io.BytesIO(raw), events=("end",))
+    for _event, elem in ctx:
+        if elem.tag != "item":
             continue
-        link = text_of(item, "link")
-        source_el = item.find("source")
+        items_seen += 1
+        if items_seen > MAX_ITEMS_SCANNED:
+            raise ET.ParseError("item cardinality exceeded")
+        if len(out) >= limit:
+            elem.clear()
+            # still need to count scanned items for the cap, so continue
+            continue
+        def _t(tag):
+            c = elem.find(tag)
+            return c.text.strip() if c is not None and c.text else ""
+        title = _t("title")
+        if not title:
+            elem.clear()
+            continue
+        link = _t("link")
+        source_el = elem.find("source")
         source = source_el.text.strip() if source_el is not None and source_el.text else ""
-        snippet = strip_html(text_of(item, "description"))
+        snippet = strip_html(_t("description"))
         if len(snippet) > SNIPPET_MAX:
             snippet = snippet[: SNIPPET_MAX - 3] + "..."
+        title_c = html.unescape(title)[:MAX_TITLE_LEN]
+        link_c = link[:MAX_LINK_LEN]
+        source_c = source[:MAX_SOURCE_LEN]
+        item_chars = len(title_c) + len(link_c) + len(source_c) + len(snippet)
+        total_chars += item_chars
+        if total_chars > MAX_TOTAL_CHARS:
+            raise ET.ParseError("aggregate char budget exceeded")
         out.append(
             {
-                "title": html.unescape(title)[:MAX_TITLE_LEN],
-                "link": link[:MAX_LINK_LEN],
-                "source": source[:MAX_SOURCE_LEN],
-                "published": epoch_of(text_of(item, "pubDate")),
+                "title": title_c,
+                "link": link_c,
+                "source": source_c,
+                "published": epoch_of(_t("pubDate")),
                 "snippet": snippet,
             }
         )
+        elem.clear()
     return out
 
 

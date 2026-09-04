@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "synapsync.news-feed",
-  "name": "Wire",
-  "version": "1.2.0",
+  "name": "News Feed",
+  "version": "1.3.0",
   "author": "Roimer Peraza",
   "description": "Read headlines from an RSS news feed, Yahoo Finance by default, from the bar.",
   "license": "MIT",
@@ -11,7 +11,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Wire",
+    "displayName": "News Feed",
     "description": "Fetch and read headlines from any RSS feed without leaving the bar",
     "category": "News",
     "allowMultiple": false,

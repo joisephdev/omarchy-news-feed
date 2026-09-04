@@ -9,7 +9,7 @@ the Omarchy bar.
 - Ships with a working default: Yahoo Finance top stories
   (`finance.yahoo.com/news/rssindex`). Yahoo retired its general-purpose news
   RSS feed, so this is the Yahoo feed that is actually online today.
-- Wire-service styling: the bar entry is a live ticker of the latest
+- Ticker styling: the bar entry is a live ticker of the latest
   headline, and the panel reads top to bottom — one featured story, then a
   numbered feed of the rest.
 - Select a headline to read it in a floating reader window, extracted to
@@ -90,7 +90,7 @@ the real page (images, video, interactive embeds, a paywall login), select
 list to skip the reader entirely.
 
 - **Enter** — open the current article in your browser (closes the reader)
-- **Escape**, **✕**, or **← wire** — close the reader
+- **Escape**, **✕**, or **← news** — close the reader
 - Selecting **Open in browser** also closes the reader
 
 ## Privacy and network access

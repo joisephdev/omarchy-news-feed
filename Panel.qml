@@ -6,9 +6,9 @@ import qs.Commons
 import qs.Ui
 
 // Bar headline reader for any RSS feed (Yahoo Finance by default), styled as
-// a wire-service ticker rather than a search list: the bar entry shows the
+// a news ticker rather than a search list: the bar entry shows the
 // live latest headline instead of a static label, and the panel reads top
-// to bottom like a press wire — one featured story, then a numbered feed
+// to bottom like a news feed — one featured story, then a numbered feed
 // of the rest, set entirely in the shell's monospace theme font.
 //
 // Left click (or keyboard summon) opens the panel; typing filters the
@@ -436,7 +436,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰎕 Wire"
+    text: "󰎕 News Feed"
     fontSize: Style.font.bodySmall
     horizontalMargin: 6.5
     tooltipText: {
@@ -513,7 +513,7 @@ Panel {
             }
 
             Text {
-              text: "wire"
+              text: "news"
               font.capitalization: Font.AllUppercase
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -653,7 +653,7 @@ Panel {
             id: filterField
             anchors.centerIn: parent
             width: parent.width
-            placeholderText: "Search the wire…"
+            placeholderText: "Search the feed…"
             foreground: root.foreground
 
             onAccepted: root.openHeadline()
@@ -806,7 +806,7 @@ Panel {
           }
         }
 
-        // ---- wire list ----------------------------------------------------------
+        // ---- news list ----------------------------------------------------------
 
         ListView {
           id: resultList
@@ -925,7 +925,7 @@ Panel {
           text: {
             if (root.loading && !root.hasItems) return "receiving…"
             if (root.lastError !== "") return root.lastError
-            return root.query === "" ? "— wire is quiet —" : "no matches for “" + root.query + "”"
+            return root.query === "" ? "— feed is quiet —" : "no matches for “" + root.query + "”"
           }
           font.capitalization: root.lastError === "" ? Font.AllUppercase : Font.MixedCase
           color: root.dim
@@ -999,7 +999,7 @@ Panel {
           Text {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "← wire"
+            text: "← news"
             font.capitalization: Font.AllUppercase
             color: root.dim
             font.family: root.fontFamily
